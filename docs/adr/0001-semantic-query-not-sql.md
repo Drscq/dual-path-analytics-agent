@@ -1,0 +1,3 @@
+# Models emit a semantic query, not SQL
+
+The fast path asks the model for a semantic query (fields, filters, sorts, limit) and compiles it to SQL with deterministic code, instead of asking for SQL directly. This is what lets the slow path audit field by field ("is a status filter missing?") rather than re-reading free-form SQL, confines joins and fan-out handling to one tested compiler, and makes every failure classifiable by issue kind. The cost is expressiveness: anything the semantic layer cannot describe cannot be answered, so the direct-SQL baseline is kept as a measured comparison arm rather than discarded.

@@ -1,0 +1,27 @@
+# Semantic layer for thelook_ecommerce. Format: see src/dpa/semantic.py.
+#
+# TODO(Changqi): one view is filled in as an example of the format. Add views for orders, users,
+# products, inventory_items and distribution_centers (check real column names with
+# `SELECT * FROM <table> LIMIT 5` once `make data` has run), then an explore that joins them.
+
+views:
+  - name: order_items
+    table: order_items
+    dimensions:
+      - {name: id, sql: "${TABLE}.id", type: number, primary_key: true}
+      - {name: order_id, sql: "${TABLE}.order_id", type: number}
+      - {name: product_id, sql: "${TABLE}.product_id", type: number}
+      - {name: status, sql: "${TABLE}.status", type: string,
+         description: "Item status, e.g. Complete, Cancelled, Returned, Shipped, Processing"}
+      - {name: created_date, sql: "CAST(${TABLE}.created_at AS DATE)", type: date}
+      - {name: sale_price, sql: "${TABLE}.sale_price", type: number}
+    measures:
+      - {name: count, type: count, description: "Number of order items"}
+      - {name: total_sale_price, type: sum, sql: "${TABLE}.sale_price",
+         description: "Revenue: sum of item sale prices"}
+      - {name: average_sale_price, type: average, sql: "${TABLE}.sale_price"}
+
+explores:
+  - name: order_items
+    base_view: order_items
+    description: "Sales at the order-item level."

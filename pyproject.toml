@@ -1,0 +1,32 @@
+[project]
+name = "dual-path-analytics-agent"
+version = "0.1.0"
+description = "A conversational analytics agent with a fast answering path and a slow auditing path, evaluated on accuracy and latency."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=1.1",
+    "google-genai>=1.0",
+    "kagglehub>=0.3",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -rs"
+markers = ["live: calls the real Gemini API (run with DPA_LIVE=1)"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

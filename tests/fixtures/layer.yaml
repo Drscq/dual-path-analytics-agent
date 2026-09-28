@@ -1,0 +1,38 @@
+views:
+  - name: users
+    table: users
+    dimensions:
+      - {name: id, sql: "${TABLE}.id", type: number, primary_key: true}
+      - {name: country, sql: "${TABLE}.country", type: string}
+    measures:
+      - {name: count, type: count}
+
+  - name: orders
+    table: orders
+    dimensions:
+      - {name: order_id, sql: "${TABLE}.order_id", type: number, primary_key: true}
+      - {name: user_id, sql: "${TABLE}.user_id", type: number}
+      - {name: status, sql: "${TABLE}.status", type: string}
+      - {name: created_date, sql: "CAST(${TABLE}.created_at AS DATE)", type: date}
+    measures:
+      - {name: count, type: count}
+
+  - name: order_items
+    table: order_items
+    dimensions:
+      - {name: id, sql: "${TABLE}.id", type: number, primary_key: true}
+      - {name: order_id, sql: "${TABLE}.order_id", type: number}
+      - {name: sale_price, sql: "${TABLE}.sale_price", type: number}
+    measures:
+      - {name: count, type: count}
+      - {name: total_sale_price, type: sum, sql: "${TABLE}.sale_price"}
+      - {name: average_sale_price, type: average, sql: "${TABLE}.sale_price"}
+
+explores:
+  - name: order_items
+    base_view: order_items
+    joins:
+      - {view: orders, sql_on: "${order_items.order_id} = ${orders.order_id}", relationship: many_to_one}
+      - {view: users, sql_on: "${orders.user_id} = ${users.id}", relationship: many_to_one}
+  - name: users
+    base_view: users

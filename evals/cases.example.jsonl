@@ -1,0 +1,2 @@
+{"id": "rev-total", "question": "What is our total revenue from completed items?", "gold_sql": "SELECT SUM(sale_price) FROM order_items WHERE status = 'Complete'", "tags": ["aggregate", "filter"]}
+{"id": "rev-top-month", "question": "Which month in 2024 had the highest revenue?", "gold_sql": "SELECT date_trunc('month', created_at) AS m, SUM(sale_price) AS rev FROM order_items WHERE year(created_at) = 2024 GROUP BY 1 ORDER BY 2 DESC LIMIT 1", "order_matters": true, "tags": ["time", "top_k"]}
