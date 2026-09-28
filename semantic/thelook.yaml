@@ -1,8 +1,5 @@
 # Semantic layer for thelook_ecommerce. Format: see src/dpa/semantic.py.
-#
-# TODO(Changqi): one view is filled in as an example of the format. Add views for orders, users,
-# products, inventory_items and distribution_centers (check real column names with
-# `SELECT * FROM <table> LIMIT 5` once `make data` has run), then an explore that joins them.
+# All timestamps are UTC (converted at load time by scripts/download_data.py).
 
 views:
   - name: order_items
@@ -10,18 +7,84 @@ views:
     dimensions:
       - {name: id, sql: "${TABLE}.id", type: number, primary_key: true}
       - {name: order_id, sql: "${TABLE}.order_id", type: number}
+      - {name: user_id, sql: "${TABLE}.user_id", type: number}
       - {name: product_id, sql: "${TABLE}.product_id", type: number}
       - {name: status, sql: "${TABLE}.status", type: string,
-         description: "Item status, e.g. Complete, Cancelled, Returned, Shipped, Processing"}
-      - {name: created_date, sql: "CAST(${TABLE}.created_at AS DATE)", type: date}
+         description: "Item status: Complete, Shipped, Processing, Cancelled, Returned"}
+      - {name: created_date, sql: "CAST(${TABLE}.created_at AS DATE)", type: date,
+         description: "Day the item was ordered"}
+      - {name: created_month, sql: "CAST(date_trunc('month', ${TABLE}.created_at) AS DATE)",
+         type: date, description: "First day of the month the item was ordered"}
+      - {name: created_year, sql: "year(${TABLE}.created_at)", type: number,
+         description: "Year the item was ordered"}
       - {name: sale_price, sql: "${TABLE}.sale_price", type: number}
     measures:
       - {name: count, type: count, description: "Number of order items"}
       - {name: total_sale_price, type: sum, sql: "${TABLE}.sale_price",
-         description: "Revenue: sum of item sale prices"}
+         description: "Revenue: sum of item sale prices, across all statuses unless filtered"}
       - {name: average_sale_price, type: average, sql: "${TABLE}.sale_price"}
+
+  - name: orders
+    table: orders
+    dimensions:
+      - {name: order_id, sql: "${TABLE}.order_id", type: number, primary_key: true}
+      - {name: status, sql: "${TABLE}.status", type: string,
+         description: "Order status: Complete, Shipped, Processing, Cancelled, Returned"}
+      - {name: created_year, sql: "year(${TABLE}.created_at)", type: number,
+         description: "Year the order was placed"}
+      - {name: num_of_item, sql: "${TABLE}.num_of_item", type: number}
+    measures:
+      - {name: count, type: count, description: "Number of orders"}
+
+  - name: users
+    table: users
+    dimensions:
+      - {name: id, sql: "${TABLE}.id", type: number, primary_key: true}
+      - {name: age, sql: "${TABLE}.age", type: number}
+      - {name: gender, sql: "${TABLE}.gender", type: string, description: "M or F"}
+      - {name: city, sql: "${TABLE}.city", type: string}
+      - {name: state, sql: "${TABLE}.state", type: string}
+      - {name: country, sql: "${TABLE}.country", type: string,
+         description: "Country name as stored, e.g. United States, China, Brasil"}
+      - {name: traffic_source, sql: "${TABLE}.traffic_source", type: string,
+         description: "How the customer was acquired: Search, Organic, Facebook, Email, Display"}
+    measures:
+      - {name: count, type: count, description: "Number of distinct customers"}
+
+  - name: products
+    table: products
+    dimensions:
+      - {name: id, sql: "${TABLE}.id", type: number, primary_key: true}
+      - {name: name, sql: "${TABLE}.name", type: string}
+      - {name: brand, sql: "${TABLE}.brand", type: string}
+      - {name: category, sql: "${TABLE}.category", type: string, description: "e.g. Jeans, Dresses"}
+      - {name: department, sql: "${TABLE}.department", type: string, description: "Men or Women"}
+      - {name: distribution_center_id, sql: "${TABLE}.distribution_center_id", type: number}
+      - {name: retail_price, sql: "${TABLE}.retail_price", type: number}
+    measures:
+      - {name: count, type: count, description: "Number of distinct products"}
+      - {name: brand_count, type: count_distinct, sql: "${TABLE}.brand",
+         description: "Number of distinct brands"}
+
+  - name: distribution_centers
+    table: distribution_centers
+    dimensions:
+      - {name: id, sql: "${TABLE}.id", type: number, primary_key: true}
+      - {name: name, sql: "${TABLE}.name", type: string}
+    measures:
+      - {name: count, type: count}
 
 explores:
   - name: order_items
     base_view: order_items
-    description: "Sales at the order-item level."
+    description: "Sales at the order-item level, with the order, customer, product and the
+      distribution center that stocks the product."
+    joins:
+      - {view: orders, sql_on: "${order_items.order_id} = ${orders.order_id}",
+         relationship: many_to_one}
+      - {view: users, sql_on: "${order_items.user_id} = ${users.id}", relationship: many_to_one}
+      - {view: products, sql_on: "${order_items.product_id} = ${products.id}",
+         relationship: many_to_one}
+      - {view: distribution_centers,
+         sql_on: "${products.distribution_center_id} = ${distribution_centers.id}",
+         relationship: many_to_one}

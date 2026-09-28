@@ -54,7 +54,11 @@ class GeminiClient:
             text=resp.text or "",
             latency_ms=latency_ms,
             input_tokens=(usage.prompt_token_count or 0) if usage else 0,
-            output_tokens=(usage.candidates_token_count or 0) if usage else 0,
+            # Thinking tokens are billed as output, so count them here.
+            output_tokens=(
+                (usage.candidates_token_count or 0) + (usage.thoughts_token_count or 0)
+                if usage else 0
+            ),
         )
 
 

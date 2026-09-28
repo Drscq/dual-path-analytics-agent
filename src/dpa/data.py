@@ -31,8 +31,22 @@ def build_db(csv_dir: str | Path, db_path: str | Path, tables: tuple[str, ...] =
         db_path.unlink()
     counts = {}
     with duckdb.connect(str(db_path)) as conn:
+        conn.execute("SET TimeZone = 'UTC'")
         for t in tables:
             src = str(csv_dir / f"{t}.csv")
-            conn.execute(f"CREATE TABLE {t} AS SELECT * FROM read_csv_auto(?, header=true)", [src])
+            # sample_size=-1: infer types from the whole file (the default sample misreads
+            # e.g. orders.gender, which is empty for tens of thousands of rows before "M").
+            conn.execute(
+                f"CREATE TABLE {t} AS SELECT * FROM read_csv_auto(?, header=true, sample_size=-1)",
+                [src],
+            )
+            # Store instants as plain UTC TIMESTAMP: fetching TIMESTAMPTZ into Python needs pytz,
+            # and time-zone-aware values add nothing to the questions asked of this data.
+            tz_cols = conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = ? AND data_type = 'TIMESTAMP WITH TIME ZONE'", [t]
+            ).fetchall()
+            for (col,) in tz_cols:
+                conn.execute(f'ALTER TABLE {t} ALTER "{col}" TYPE TIMESTAMP')
             counts[t] = conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
     return counts

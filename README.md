@@ -50,10 +50,18 @@ with `DPA_FAST_MODEL` / `DPA_SLOW_MODEL`.
 
 ## Status
 
-Scaffolding, interfaces and tests are in place; the core modules (`semantic`, `fast_path`,
-`slow_path`, `orchestrator`, `eval`) are being implemented by hand against those tests.
-`make todo` lists what is left. Tests for unimplemented functions report as skipped, so CI
-stays green while the stubs are filled in.
+The core modules (`semantic`, `fast_path`, `slow_path`, `orchestrator`, `eval`) were implemented
+with an AI coding agent against the docstring specs and tests written first, then verified:
+the tests were left untouched, and an independent set of edge-case checks (SQL escaping, minimal
+joins, fan-out-safe counts, metric functions against reference implementations, concurrency of
+the two paths) was run against the result.
+
+Run an evaluation:
+
+```bash
+python scripts/run_eval.py run --config fast_only     # direct_sql | fast_only | amend_flash | amend_pro
+python scripts/run_eval.py report runs/*.jsonl --hold-deadline-ms 3000
+```
 
 ## License
 

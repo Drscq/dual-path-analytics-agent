@@ -1,14 +1,69 @@
 """Accuracy and latency metrics.
 
-TODO(Changqi): implement every function. Tests: tests/test_metrics.py.
+Tests: tests/test_metrics.py.
 """
 
 from __future__ import annotations
 
+import itertools
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from decimal import Decimal, DecimalException
+from typing import Any
 
 from dpa.types import QueryResult
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
+
+
+def _values_equal(left: Any, right: Any, rel_tol: float) -> bool:
+    if left is None or right is None:
+        return left is None and right is None
+    if _is_number(left) and _is_number(right):
+        try:
+            left_decimal = left if isinstance(left, Decimal) else Decimal(str(left))
+            right_decimal = right if isinstance(right, Decimal) else Decimal(str(right))
+            if not left_decimal.is_finite() or not right_decimal.is_finite():
+                return left_decimal == right_decimal
+            tolerance = Decimal(str(rel_tol))
+            scale = max(abs(left_decimal), abs(right_decimal))
+            return abs(left_decimal - right_decimal) <= tolerance * scale
+        except DecimalException:
+            return left == right
+    return left == right
+
+
+def _rows_equal(left: tuple[Any, ...], right: tuple[Any, ...], rel_tol: float) -> bool:
+    return len(left) == len(right) and all(
+        _values_equal(a, b, rel_tol) for a, b in zip(left, right)
+    )
+
+
+def _multiset_matches(
+    predicted: tuple[tuple[Any, ...], ...],
+    expected: tuple[tuple[Any, ...], ...],
+    rel_tol: float,
+) -> bool:
+    edges = [
+        [index for index, row in enumerate(expected) if _rows_equal(candidate, row, rel_tol)]
+        for candidate in predicted
+    ]
+    matched: dict[int, int] = {}
+
+    def assign(row_index: int, visited: set[int]) -> bool:
+        for expected_index in edges[row_index]:
+            if expected_index in visited:
+                continue
+            visited.add(expected_index)
+            if expected_index not in matched or assign(matched[expected_index], visited):
+                matched[expected_index] = row_index
+                return True
+        return False
+
+    return all(assign(index, set()) for index in range(len(predicted)))
 
 
 def results_match(
@@ -23,7 +78,20 @@ def results_match(
     - Numbers (int / float / Decimal) are equal within rel_tol; None only equals None;
       everything else compares with ==.
     """
-    raise NotImplementedError
+    width = len(pred.columns)
+    if width != len(gold.columns) or len(pred.rows) != len(gold.rows):
+        return False
+    if any(len(row) != width for row in (*pred.rows, *gold.rows)):
+        return False
+
+    for permutation in itertools.permutations(range(width)):
+        reordered = tuple(tuple(row[index] for index in permutation) for row in pred.rows)
+        if order_matters:
+            if all(_rows_equal(a, b, rel_tol) for a, b in zip(reordered, gold.rows)):
+                return True
+        elif _multiset_matches(reordered, gold.rows, rel_tol):
+            return True
+    return False
 
 
 def percentile(values: Sequence[float], p: float) -> float:
@@ -32,7 +100,18 @@ def percentile(values: Sequence[float], p: float) -> float:
 
     Raises: ValueError for an empty sequence or p outside [0, 100].
     """
-    raise NotImplementedError
+    if not values:
+        raise ValueError("percentile is undefined for an empty sequence")
+    if not 0 <= p <= 100:
+        raise ValueError("percentile p must be between 0 and 100")
+    ordered = sorted(float(value) for value in values)
+    rank = (len(ordered) - 1) * p / 100
+    low = math.floor(rank)
+    high = math.ceil(rank)
+    if low == high:
+        return ordered[low]
+    fraction = rank - low
+    return ordered[low] + (ordered[high] - ordered[low]) * fraction
 
 
 @dataclass(frozen=True)
@@ -63,4 +142,20 @@ class Summary:
 
 def summarize(records: Sequence[RunRecord]) -> Summary:
     """Aggregate records; accuracies are fractions in [0, 1]. Raises ValueError if empty."""
-    raise NotImplementedError
+    if not records:
+        raise ValueError("cannot summarize an empty sequence")
+    count = len(records)
+    return Summary(
+        n=count,
+        fast_accuracy=sum(record.fast_correct for record in records) / count,
+        final_accuracy=sum(record.final_correct for record in records) / count,
+        corrections=sum(record.corrected for record in records),
+        fixed=sum(record.corrected and not record.fast_correct and record.final_correct
+                  for record in records),
+        broke=sum(record.corrected and record.fast_correct and not record.final_correct
+                  for record in records),
+        p50_first_ms=percentile([record.time_to_first_ms for record in records], 50),
+        p95_first_ms=percentile([record.time_to_first_ms for record in records], 95),
+        p50_final_ms=percentile([record.time_to_final_ms for record in records], 50),
+        p95_final_ms=percentile([record.time_to_final_ms for record in records], 95),
+    )
