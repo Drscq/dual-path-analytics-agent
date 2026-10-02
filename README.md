@@ -53,9 +53,48 @@ is not deterministic (2 of its 9 misses flipped on a re-run). Hold-mode rows are
 amend runs' recorded fast, audit and correction times rather than run separately
 (`scripts/run_eval.py report`). Raw records: [results/2026-09-28](results/2026-09-28).
 
-**Next (round 2).** A harder question set built to make the fast path fail: implicit business
-rules, relative dates ("last quarter"), fan-out traps, and ambiguous wording. That is where the
-slow path has to prove it is worth its cost.
+**Next (round 2).** A harder question set built to make the fast path fail — see below.
+
+## Results (round 2, 2026-10-02): a harder set
+
+30 new questions ([evals/cases_round2.jsonl](evals/cases_round2.jsonl)) built to make the fast path
+fail: value mapping ("Brazil" is stored as `Brasil`, "female" as `F`), implicit rules ("revenue we
+kept" = without cancelled and returned items; "in transit" = `Shipped`), fan-out traps (orders or
+customers counted through item rows), quarter and half-year windows, relative dates anchored by
+"Today is ...", order date vs item date, ranking direction, and one data-quality case (`Germany`
+and `Deutschland` both occur). Every gold SQL was run on the data, and the trap answers were checked
+to differ from the gold ones.
+
+| Configuration | Accuracy | Time to first answer p50 / p95 | Time to final answer p50 / p95 | Cost / question |
+|---|---|---|---|---|
+| `direct_sql` | **73%** | 3.51 s / 32.1 s | 3.51 s / 32.1 s | $0.0087 |
+| `fast_only` | **87%** | 2.22 s / 5.16 s | 2.22 s / 5.16 s | $0.0026 |
+| `amend_flash` | 87% | 2.26 s / 10.2 s | 2.26 s / 10.2 s | $0.0059 |
+| `amend_pro` | 87% | 2.55 s / 8.40 s | 2.55 s / 8.40 s | $0.0082 |
+| `hold3000_flash` | 87% | 4.73 s / 13.0 s | 4.73 s / 13.0 s | $0.0059 |
+| `hold3000_pro` | 87% | 5.55 s / 11.4 s | 5.55 s / 11.4 s | $0.0082 |
+
+**Findings**
+
+- **The semantic layer still wins**, 87% vs 73%, at under a third of the cost and a sixth of the
+  p95 latency. Direct SQL fell into the traps the layer is there to close: `'Brazil'`, an off-by-one
+  quarter boundary, a wrong sort direction, item rows counted as products.
+- **All four fast-path misses have one root cause, and it is in the layer, not the model.** Every
+  question about *customers* ("How many customers are based in Brazil?", "How many female
+  customers do we have?", "Which 5 US states have the most customers?") was answered through the
+  only explore, which starts at `order_items`. The compiled SQL is correct for that explore, but it
+  can only see customers who have bought something: 11,640 of the 14,507 customers in Brazil,
+  40,152 of 50,208 female customers. The model mapped `Brasil` and `F` correctly.
+- **The audit passed all four wrong answers, with no issue raised, under both auditors.** It
+  checks the query against the explore it is given, and that explore makes the wrong population
+  look right. A slow model cannot catch an error that the semantic layer itself encodes.
+- `Germany` vs `Deutschland` is missed by every configuration: no part of the system sees the
+  stored values.
+
+**Next (round 3).** Give questions about customers their own explore (`users` as base view, orders
+and items joined one-to-many), let the fast path pick the explore, and show the auditor the
+explore's base grain so it can ask "is this the population the question means?". Re-run this set to
+see whether the four misses move.
 
 ## How it works
 
