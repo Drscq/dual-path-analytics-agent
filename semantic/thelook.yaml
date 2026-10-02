@@ -78,11 +78,28 @@ explores:
   - name: order_items
     base_view: order_items
     description: "Sales at the order-item level, with the order, customer, product and the
-      distribution center that stocks the product."
+      distribution center that stocks the product. Customer fields here only reach customers
+      who have bought something; use the users explore to count or segment all customers."
     joins:
       - {view: orders, sql_on: "${order_items.order_id} = ${orders.order_id}",
          relationship: many_to_one}
       - {view: users, sql_on: "${order_items.user_id} = ${users.id}", relationship: many_to_one}
+      - {view: products, sql_on: "${order_items.product_id} = ${products.id}",
+         relationship: many_to_one}
+      - {view: distribution_centers,
+         sql_on: "${products.distribution_center_id} = ${distribution_centers.id}",
+         relationship: many_to_one}
+
+  - name: users
+    base_view: users
+    description: "Customers, including those who have never ordered. Use it for questions about
+      customers as a population (how many customers, by country, state, gender, age or traffic
+      source). Joined order items, orders and products reach only the customers who bought."
+    joins:
+      - {view: order_items, sql_on: "${users.id} = ${order_items.user_id}",
+         relationship: one_to_many}
+      - {view: orders, sql_on: "${order_items.order_id} = ${orders.order_id}",
+         relationship: many_to_one}
       - {view: products, sql_on: "${order_items.product_id} = ${products.id}",
          relationship: many_to_one}
       - {view: distribution_centers,

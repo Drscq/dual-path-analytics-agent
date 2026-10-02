@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from typing import Any
 
 from dpa.fast_path import SEMANTIC_QUERY_FORMAT, ProposalError, parse_semantic_query
 from dpa.llm import LLMClient
-from dpa.semantic import UnknownFieldError, describe_layer, resolve_field
-from dpa.types import FastResult, Issue, SemanticLayer, SemanticQuery, Verdict
+from dpa.semantic import UnknownFieldError, describe_layer, explore_base_view, resolve_field
+from dpa.types import Dimension, FastResult, Issue, SemanticLayer, SemanticQuery, Verdict
 
 MAX_ROWS_SHOWN = 20
 ISSUE_KINDS = (
@@ -47,6 +48,24 @@ Return JSON shaped like {{"ok": false, "issues": [{{"kind": "missing_filter",
 "detail": "..."}}], "corrected_query": null}}."""
 
 
+# Round 3 context, added to the audit prompt only when the caller provides it.
+POPULATION_CHECK = """Population check: the answer was computed over explore "{used}", whose base
+view is "{base}"; every row it counts is a {base} row, and fields of joined views only reach rows
+linked to one. If the question is about a population this explore cannot see (for example all
+customers, including those who never ordered), report a wrong_field issue and give a
+corrected_query with "explore" set to the right one of these explores:
+
+{others}"""
+
+VALUES_CHECK = """Stored values of the string dimensions the query filters on (the complete list
+when it has fewer than {limit} entries). A filter value that is not stored this way, or that misses
+another stored spelling of the same thing, is a wrong_filter issue:
+{values}"""
+
+VALUE_LIMIT = 60
+ValueLookup = Callable[[str], list]
+
+
 def _query_payload(query: SemanticQuery) -> dict[str, Any]:
     return {
         "dimensions": list(query.dimensions),
@@ -77,7 +96,14 @@ def _error_verdict(start: float, message: str) -> Verdict:
 
 
 async def audit(
-    fast: FastResult, *, layer: SemanticLayer, explore: str, llm: LLMClient, model: str
+    fast: FastResult,
+    *,
+    layer: SemanticLayer,
+    explore: str,
+    llm: LLMClient,
+    model: str,
+    explores: tuple[str, ...] | None = None,
+    value_lookup: ValueLookup | None = None,
 ) -> Verdict:
     """Audit one fast-path answer.
 
@@ -107,7 +133,8 @@ async def audit(
             },
             default=str,
         )
-        description = describe_layer(layer, explore)
+        used = fast.query.explore or explore
+        description = describe_layer(layer, used)
         prompt = SLOW_AUDIT_PROMPT.format(
             question=fast.question,
             query_json=query_json,
@@ -116,6 +143,20 @@ async def audit(
             max_rows=MAX_ROWS_SHOWN,
             description=description,
         )
+        if explores and len(explores) > 1:
+            others = "\n\n".join(describe_layer(layer, name) for name in explores if name != used)
+            prompt += "\n\n" + POPULATION_CHECK.format(
+                used=used, base=explore_base_view(layer, used), others=others
+            )
+        if value_lookup is not None:
+            lines = []
+            for item in fast.query.filters:
+                field = resolve_field(layer, item.field)
+                if isinstance(field, Dimension) and field.type == "string":
+                    values = value_lookup(item.field)
+                    lines.append(f"- {item.field}: {json.dumps(values, default=str)}")
+            if lines:
+                prompt += "\n\n" + VALUES_CHECK.format(limit=VALUE_LIMIT, values="\n".join(lines))
         response = await llm.generate(
             model=model,
             system=SLOW_SYSTEM_PROMPT,
@@ -147,7 +188,11 @@ async def audit(
         corrected_payload = reply.get("corrected_query")
         if corrected_payload is not None:
             try:
-                corrected = parse_semantic_query(corrected_payload, explore)
+                target = used
+                if (explores and isinstance(corrected_payload, dict)
+                        and corrected_payload.get("explore") in explores):
+                    target = corrected_payload["explore"]
+                corrected = parse_semantic_query(corrected_payload, target)
                 _validate_query_fields(corrected, layer)
             except (ProposalError, UnknownFieldError):
                 corrected = None

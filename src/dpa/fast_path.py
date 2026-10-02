@@ -63,6 +63,17 @@ Explore description:
 Return JSON shaped like {{"dimensions": [], "measures": [], "filters": [],
 "sorts": [], "limit": null}}."""
 
+FAST_MULTI_QUERY_PROMPT = """Question:
+{question}
+
+Several explores are available. Pick the one whose base view is the population the question is
+about (each row it counts is one row of its base view), and add "explore": its name.
+
+{descriptions}
+
+Return JSON shaped like {{"explore": "...", "dimensions": [], "measures": [], "filters": [],
+"sorts": [], "limit": null}}."""
+
 FAST_SQL_SYSTEM_PROMPT = """Write one read-only DuckDB SELECT statement that answers the question.
 Use only the tables and columns in the schema. For "which ..." or "top N" questions, return the
 entity and the metric used to rank it. Return SQL only, without explanation."""
@@ -135,7 +146,13 @@ def parse_semantic_query(payload: dict, explore: str) -> SemanticQuery:
 
 
 async def propose_query(
-    question: str, layer: SemanticLayer, explore: str, llm: LLMClient, *, model: str
+    question: str,
+    layer: SemanticLayer,
+    explore: str,
+    llm: LLMClient,
+    *,
+    model: str,
+    explores: tuple[str, ...] | None = None,
 ) -> SemanticQuery:
     """Ask the fast model for a semantic query answering `question`.
 
@@ -147,17 +164,26 @@ async def propose_query(
     Raises: ProposalError if the reply is not JSON, has the wrong shape, or names a field
             that does not exist.
     """
-    description = describe_layer(layer, explore)
+    if explores and len(explores) > 1:
+        # Round 3: the model also picks the explore, i.e. the population being counted.
+        descriptions = "\n\n".join(describe_layer(layer, name) for name in explores)
+        prompt = FAST_MULTI_QUERY_PROMPT.format(question=question, descriptions=descriptions)
+    else:
+        prompt = FAST_QUERY_PROMPT.format(
+            question=question, description=describe_layer(layer, explore)
+        )
     response = await llm.generate(
-        model=model,
-        system=FAST_SYSTEM_PROMPT,
-        prompt=FAST_QUERY_PROMPT.format(question=question, description=description),
-        json_mode=True,
+        model=model, system=FAST_SYSTEM_PROMPT, prompt=prompt, json_mode=True
     )
     try:
         payload = json.loads(response.text)
     except (json.JSONDecodeError, TypeError) as exc:
         raise ProposalError("the proposal was not valid JSON") from exc
+    if explores and len(explores) > 1 and isinstance(payload, dict):
+        chosen = payload.get("explore")
+        if chosen not in explores:
+            raise ProposalError(f"unknown explore {chosen!r}")
+        explore = chosen
     query = parse_semantic_query(payload, explore)
     names = [*query.dimensions, *query.measures]
     names.extend(filter_spec.field for filter_spec in query.filters)
@@ -208,13 +234,15 @@ async def run_fast_path(
     conn: duckdb.DuckDBPyConnection,
     llm: LLMClient,
     model: str,
+    explores: tuple[str, ...] | None = None,
 ) -> FastResult:
     """propose_query -> compile_query -> db.execute -> render_answer.
 
+    With more than one name in `explores`, the model also chooses the explore.
     latency_ms is wall time for the whole function. Errors from any step propagate.
     """
     start = time.perf_counter()
-    query = await propose_query(question, layer, explore, llm, model=model)
+    query = await propose_query(question, layer, explore, llm, model=model, explores=explores)
     sql = compile_query(query, layer)
     result = db.execute(conn, sql)
     answer_text = render_answer(question, query, result)

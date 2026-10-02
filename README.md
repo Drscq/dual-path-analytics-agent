@@ -91,10 +91,54 @@ to differ from the gold ones.
 - `Germany` vs `Deutschland` is missed by every configuration: no part of the system sees the
   stored values.
 
-**Next (round 3).** Give questions about customers their own explore (`users` as base view, orders
-and items joined one-to-many), let the fast path pick the explore, and show the auditor the
-explore's base grain so it can ask "is this the population the question means?". Re-run this set to
-see whether the four misses move.
+**Next (round 3).** Give questions about customers their own explore, let the fast path pick the
+explore, and show the auditor the explore's base grain and the stored filter values — see below.
+
+## Results (round 3, 2026-10-02): fixing the population, and an audit that can see it
+
+Two changes, both aimed at the round-2 failures:
+
+1. **A second explore and explore choice.** `users` is now an explore of its own (customers,
+   including those who never ordered, with items, orders and products joined one-to-many), and the
+   fast model picks the explore whose base view is the population the question counts.
+2. **More context for the audit, not for the fast path.** The auditor is told which explore was
+   used and what its base view is, sees the other explores, and may return a corrected query on a
+   different explore ("population check"). For every string dimension the query filters on, it also
+   sees the values actually stored (up to 60, read from the dimension's own table).
+
+Same 30 hard questions as round 2 ([evals/cases_round2.jsonl](evals/cases_round2.jsonl)):
+
+| Configuration | First-answer accuracy | Final accuracy | Fixed / broke | Time to first answer p50 / p95 | Cost / question |
+|---|---|---|---|---|---|
+| round 2 `fast_only` (one explore) | 87% | 87% | – | 2.22 s / 5.16 s | $0.0026 |
+| `fast_only_r3` (explore choice) | **97%** | 97% | – | 2.30 s / 16.5 s | $0.0047 |
+| `amend_flash_r3` | 97% | **100%** | 1 / 0 | 2.48 s / 16.6 s | $0.0084 |
+| `amend_pro_r3` | 97% | **100%** | 1 / 0 | 2.40 s / 12.0 s | $0.0110 |
+| `amend_pro_r3auditonly` (old fast path, new audit) | 87% | **100%** | **4 / 0** | 2.31 s / 9.33 s | $0.0112 |
+
+Regression check on the round-1 set ([evals/cases.jsonl](evals/cases.jsonl)): `fast_only_r3` and
+`amend_pro_r3` both 100%, no audit fired, no false alarm. Raw records:
+[results/2026-10-02-round3](results/2026-10-02-round3).
+
+**Findings**
+
+- **Explore choice fixes the population errors at the source**: the fast path went from 87% to
+  97%; the three customer-population misses are gone. The one it still misses is `Germany` vs
+  `Deutschland`, which no amount of schema knowledge reveals.
+- **The audit now catches what the fast path cannot.** With stored values in view, both auditors
+  flagged the `Germany` filter (`wrong_filter`), corrected it to both spellings, and brought the
+  final answer to 100%. The correction arrives after the first answer (p50 first answer unchanged).
+- **The audit-only run isolates the slow path's value**: keeping the round-2 fast path (one
+  explore) and upgrading only the auditor, Pro caught **all four** round-2 misses (three as
+  `wrong_field` with a switch to the `users` explore, one as `wrong_filter`), fixed every one, and
+  raised **no false alarm** on the 26 correct answers. The round-2 audit had passed all four.
+- **What it costs.** Showing two explores roughly doubles the fast path's prompt: $0.0026 →
+  $0.0047 per question, and a heavier latency tail (p95 5.2 s → 16.5 s, from four slow model
+  responses; one run, so the tail is noisy). The Flash auditor raised one false alarm (it
+  re-wrote a correct `Memphis TN` filter; the answer stayed correct), the Pro auditor none.
+- **Takeaway for the design**: the semantic layer decides what *can* be right; the audit is only
+  as good as the context it is given. Grain and stored values are cheap context that turned the
+  audit from never firing into the component that closes the last errors.
 
 ## How it works
 
@@ -102,7 +146,9 @@ see whether the four misses move.
   semantic layer; deterministic code compiles it to SQL and runs it on DuckDB.
 - **Slow path**: while the first answer is already on screen, a stronger model audits the query and
   its result (wrong field, missing filter, wrong aggregation, wrong time window) and may propose a
-  corrected query, which is shown as a correction.
+  corrected query, which is shown as a correction. Since round 3 it also sees the explore's base
+  view (population check) and the stored values of filtered string dimensions, and its correction
+  may move to another explore.
 - **Evaluation**: execution accuracy against gold SQL, and p50/p95 of both *time to first answer*
   and *time to final answer*. For answers that cannot be execution-matched, a model judge is used
   only after it is checked against hand labels (Cohen's kappa, calibration error).

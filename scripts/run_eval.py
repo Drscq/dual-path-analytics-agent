@@ -1,6 +1,8 @@
 """Run the eval set under one configuration, or compare finished runs.
 
   python scripts/run_eval.py run --config amend_pro [--limit N] [--budget 4.0]
+      [--fast-explores order_items,users] [--audit-explores order_items,users] [--audit-values]
+      [--label r3]
   python scripts/run_eval.py report runs/*.jsonl [--hold-deadline-ms 3000]
 
 Configurations
@@ -36,7 +38,8 @@ from dpa.eval.metrics import RunRecord, results_match, summarize
 from dpa.fast_path import propose_sql, run_fast_path
 from dpa.llm import GeminiClient, LLMResponse
 from dpa.orchestrator import answer
-from dpa.semantic import load_semantic_layer
+from dpa.semantic import dimension_values_sql, load_semantic_layer
+from dpa.slow_path import VALUE_LIMIT
 
 LAYER = Path("semantic/thelook.yaml")
 EXPLORE = "order_items"
@@ -81,7 +84,27 @@ class Row:
     error: str | None = None
 
 
-async def run_case(config, case, gold, *, layer, conn, llm, models, schema) -> Row:
+def _explores(text: str | None) -> tuple[str, ...] | None:
+    return tuple(x.strip() for x in text.split(",") if x.strip()) if text else None
+
+
+def value_lookup_for(conn, layer):
+    """Stored values of one dimension, read once per field and cached."""
+    cache: dict[str, list] = {}
+
+    def lookup(field: str) -> list:
+        if field not in cache:
+            sql = dimension_values_sql(layer, field, VALUE_LIMIT)
+            cache[field] = [row[0] for row in db.execute(conn, sql).rows]
+        return cache[field]
+
+    return lookup
+
+
+async def run_case(config, case, gold, *, layer, conn, llm, models, schema,
+                   fast_explores=None, audit_explores=None, value_lookup=None,
+                   label=None) -> Row:
+    name = f"{config}_{label}" if label else config
     start = time.perf_counter()
 
     def ms():
@@ -95,19 +118,21 @@ async def run_case(config, case, gold, *, layer, conn, llm, models, schema) -> R
             sql = await propose_sql(case.question, schema, llm, model=models.fast)
             ok = match(db.execute(conn, sql))
             t = ms()
-            return Row(config, case.id, ok, ok, False, t, t, fast_ms=t)
+            return Row(name, case.id, ok, ok, False, t, t, fast_ms=t)
         if config == "fast_only":
             fr = await run_fast_path(case.question, layer=layer, explore=EXPLORE, conn=conn,
-                                     llm=llm, model=models.fast)
+                                     llm=llm, model=models.fast, explores=fast_explores)
             ok = match(fr.result)
-            return Row(config, case.id, ok, ok, False, fr.latency_ms, fr.latency_ms,
+            return Row(name, case.id, ok, ok, False, fr.latency_ms, fr.latency_ms,
                        fast_ms=fr.latency_ms)
         slow = models.slow if config == "amend_pro" else models.fast
         t = await answer(case.question, layer=layer, explore=EXPLORE, conn=conn, llm=llm,
-                         fast_model=models.fast, slow_model=slow, mode="amend")
+                         fast_model=models.fast, slow_model=slow, mode="amend",
+                         fast_explores=fast_explores, audit_explores=audit_explores,
+                         value_lookup=value_lookup)
         v = t.verdict
         return Row(
-            config, case.id,
+            name, case.id,
             fast_correct=match(t.fast.result),
             final_correct=match(t.final_result),
             corrected=any(e.kind == "correction" for e in t.events),
@@ -120,7 +145,7 @@ async def run_case(config, case, gold, *, layer, conn, llm, models, schema) -> R
     except Exception as e:  # noqa: BLE001 - a failed answer is a wrong answer; keep going
         t = ms()
         err = f"{type(e).__name__}: {e}"[:300]
-        return Row(config, case.id, False, False, False, t, t, error=err)
+        return Row(name, case.id, False, False, False, t, t, error=err)
 
 
 async def run(args) -> None:
@@ -130,14 +155,20 @@ async def run(args) -> None:
     cases = load_cases(args.cases)[: args.limit]
     llm = MeteredLLM(GeminiClient(load_api_key()))
     models = Models.from_env()
-    out = Path("runs") / f"{time.strftime('%Y%m%d-%H%M%S')}-{args.config}.jsonl"
+    tag = f"{args.config}_{args.label}" if args.label else args.config
+    out = Path("runs") / f"{time.strftime('%Y%m%d-%H%M%S')}-{tag}.jsonl"
     out.parent.mkdir(exist_ok=True)
     print(f"{args.config}: {len(cases)} cases, fast={models.fast} slow={models.slow} -> {out}")
     with out.open("w") as f:
         for i, case in enumerate(cases, 1):
             gold = db.execute(conn, case.gold_sql)
             row = await run_case(args.config, case, gold, layer=layer, conn=conn, llm=llm,
-                                 models=models, schema=schema)
+                                 models=models, schema=schema,
+                                 fast_explores=_explores(args.fast_explores),
+                                 audit_explores=_explores(args.audit_explores),
+                                 value_lookup=value_lookup_for(conn, layer)
+                                 if args.audit_values else None,
+                                 label=args.label)
             f.write(json.dumps(asdict(row)) + "\n")
             f.flush()
             mark = "ok " if row.final_correct else ("ERR" if row.error else "x  ")
@@ -205,6 +236,11 @@ def main() -> None:
     r.add_argument("--cases", default="evals/cases.jsonl")
     r.add_argument("--limit", type=int)
     r.add_argument("--budget", type=float, default=4.0)
+    r.add_argument("--fast-explores", help="comma list; more than one lets the model choose")
+    r.add_argument("--audit-explores", help="comma list shown to the auditor (population check)")
+    r.add_argument("--audit-values", action="store_true",
+                   help="show the auditor the stored values of filtered string dimensions")
+    r.add_argument("--label", help="suffix for the configuration name, e.g. r3")
     p = sub.add_parser("report")
     p.add_argument("files", nargs="+")
     p.add_argument("--hold-deadline-ms", type=float, default=3000)

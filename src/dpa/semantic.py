@@ -285,6 +285,28 @@ def describe_layer(layer: SemanticLayer, explore: str) -> str:
     return "\n".join(lines)
 
 
+def explore_base_view(layer: SemanticLayer, explore: str) -> str:
+    """Name of the explore's base view, i.e. the grain its rows are counted at."""
+    spec = _explore_map(layer).get(explore)
+    if spec is None:
+        raise UnknownExploreError(f"unknown explore {explore!r}")
+    return spec.base_view
+
+
+def dimension_values_sql(layer: SemanticLayer, field: str, limit: int) -> str:
+    """SELECT DISTINCT over one dimension, read from its own view's table (no joins), so the
+    values are everything stored, not only what one explore can reach."""
+    dimension = resolve_field(layer, field)
+    if not isinstance(dimension, Dimension):
+        raise SemanticError(f"{field!r} is not a dimension")
+    view_name = field.split(".", 1)[0]
+    view = _view_map(layer)[view_name]
+    expression = _expand_sql(layer, dimension.sql, view_name)
+    return (f"SELECT DISTINCT {expression} FROM {_table_reference(view.table)} AS "
+            f"{_quote_identifier(view.name)} WHERE {expression} IS NOT NULL ORDER BY 1 "
+            f"LIMIT {int(limit)}")
+
+
 def _quote_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 

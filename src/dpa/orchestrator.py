@@ -96,6 +96,9 @@ async def answer(
     slow_model: str,
     mode: Mode = "amend",
     hold_deadline_ms: float = 1500,
+    fast_explores: tuple[str, ...] | None = None,
+    audit_explores: tuple[str, ...] | None = None,
+    value_lookup=None,
 ) -> Transcript:
     """Answer one question. All event times are ms since this function was entered.
 
@@ -131,6 +134,7 @@ async def answer(
         conn=conn,
         llm=llm,
         model=fast_model,
+        explores=fast_explores,
     )
     fast_finished = time.perf_counter()
     transcript.fast = fast
@@ -138,7 +142,8 @@ async def answer(
     transcript.final_result = fast.result
 
     audit_task = asyncio.create_task(
-        audit(fast, layer=layer, explore=explore, llm=llm, model=slow_model)
+        audit(fast, layer=layer, explore=explore, llm=llm, model=slow_model,
+              explores=audit_explores, value_lookup=value_lookup)
     )
     if mode == "amend":
         transcript.events.append(AnswerEvent("first", fast.answer_text, _event_time(start)))
